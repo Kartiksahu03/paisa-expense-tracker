@@ -4,6 +4,20 @@ import { Bot, X, Send, Loader2, Sparkles } from "lucide-react";
 import { aiApi } from "../../features/ai/aiApi.js";
 import VoiceButton from "./VoiceButton.jsx";
 
+const speak = (text) => {
+  if (typeof window === "undefined" || !("speechSynthesis" in window) || !text) return;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = "en-IN";
+  utterance.rate = 1;
+  const voices = window.speechSynthesis.getVoices();
+  const voice =
+    voices.find((v) => /en-IN/i.test(v.lang)) ||
+    voices.find((v) => /^en/i.test(v.lang));
+  if (voice) utterance.voice = voice;
+  window.speechSynthesis.speak(utterance);
+};
+
 const SUGGESTIONS = [
   "How can I save more this month?",
   "Why did my expenses go up?",
@@ -36,6 +50,7 @@ export default function AssistantPanel() {
       const history = next.filter((m, i) => !(i === 0 && m.role === "assistant"));
       const { reply } = await aiApi.chat(history);
       setMessages((m) => [...m, { role: "assistant", content: reply }]);
+      speak(reply);
     } catch {
       setMessages((m) => [...m, { role: "assistant", content: "Sorry, I couldn't reach the assistant. Try again." }]);
     } finally {
