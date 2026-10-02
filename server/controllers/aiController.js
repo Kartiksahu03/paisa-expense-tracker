@@ -18,6 +18,13 @@ export const aiAddTransaction = async (req, res) => {
 
   try {
     const parsed = await parseTransaction(text.trim());
+
+    if (!parsed.amount || parsed.amount <= 0) {
+      return res.status(422).json({
+        message: "I couldn't find a valid amount. Try saying something like “spent 250 on lunch”.",
+      });
+    }
+
     const txn = await Transaction.create({
       user: req.user._id,
       type: parsed.type,
@@ -25,9 +32,15 @@ export const aiAddTransaction = async (req, res) => {
       category: parsed.category,
       note: parsed.note || text.trim(),
     });
+
     res.status(201).json({ parsed, transaction: txn });
   } catch (err) {
-    res.status(500).json({ message: "Could not understand that. Try rephrasing." });
+    console.error("AI add transaction failed:", err);
+    res.status(500).json({
+      message: err?.message?.includes("GROQ_API_KEY")
+        ? "AI service is not configured on the server."
+        : "Could not understand that. Try rephrasing.",
+    });
   }
 };
 
