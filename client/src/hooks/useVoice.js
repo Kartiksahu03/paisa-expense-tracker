@@ -1,12 +1,18 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import api from "../services/axios.js";
 
-// Browser speech-to-text wrapper.
-// Keeps recognition errors visible and avoids a separate getUserMedia preflight,
-// which can interfere with the browser's own SpeechRecognition microphone flow.
+// Cross-browser voice input.
+// Records from the microphone with MediaRecorder and sends the audio to
+// Paisa's backend, where Groq Whisper performs the transcription.
+// This avoids browser-specific SpeechRecognition service failures.
 export function useVoice(onResult, onError) {
   const [listening, setListening] = useState(false);
+  const [processing, setProcessing] = useState(false);
   const [supported, setSupported] = useState(false);
-  const recRef = useRef(null);
+  const recorderRef = useRef(null);
+  const streamRef = useRef(null);
+  const chunksRef = useRef([]);
+  const timerRef = useRef(null);
   const resultRef = useRef(onResult);
   const errorRef = useRef(onError);
 
@@ -21,113 +27,157 @@ export function useVoice(onResult, onError) {
   useEffect(() => {
     setSupported(
       typeof window !== "undefined" &&
-        !!(window.SpeechRecognition || window.webkitSpeechRecognition)
+        !!navigator.mediaDevices?.getUserMedia &&
+        typeof window.MediaRecorder !== "undefined"
     );
 
     return () => {
+      clearTimeout(timerRef.current);
       try {
-        recRef.current?.abort();
+        recorderRef.current?.stop();
       } catch {}
-      recRef.current = null;
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      recorderRef.current = null;
+      streamRef.current = null;
     };
   }, []);
 
-  const start = useCallback(() => {
-    if (typeof window === "undefined") return;
+  const finishRecording = useCallback(() => {
+    const recorder = recorderRef.current;
+    if (!recorder || recorder.state === "inactive") return;
 
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    clearTimeout(timerRef.current);
+    recorder.stop();
+  }, []);
 
-    if (!SR) {
-      errorRef.current?.(
-        "Voice input is not supported here. Use the latest Chrome or Edge."
-      );
+  const start = useCallback(async () => {
+    if (recorderRef.current || processing) return;
+
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices?.getUserMedia ||
+      typeof MediaRecorder === "undefined"
+    ) {
+      errorRef.current?.("Voice recording is not supported in this browser.");
       return;
     }
 
-    if (recRef.current) return;
+    let stream;
 
-    const rec = new SR();
-    rec.lang = "en-IN";
-    rec.continuous = false;
-    rec.interimResults = true;
-    rec.maxAlternatives = 1;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
 
-    rec.onstart = () => {
-      setListening(true);
-    };
+      const mimeCandidates = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/ogg;codecs=opus",
+        "audio/mp4",
+      ];
 
-    rec.onresult = (event) => {
-      let transcript = "";
+      const mimeType =
+        mimeCandidates.find((type) => MediaRecorder.isTypeSupported(type)) || "";
 
-      for (let i = event.resultIndex; i < event.results.length; i += 1) {
-        const result = event.results[i];
-        if (result?.isFinal) {
-          transcript += result[0]?.transcript || "";
-        }
-      }
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
 
-      transcript = transcript.trim();
+      chunksRef.current = [];
+      streamRef.current = stream;
+      recorderRef.current = recorder;
 
-      if (transcript) {
-        resultRef.current?.(transcript);
-      }
-    };
-
-    rec.onnomatch = () => {
-      errorRef.current?.(
-        'I could not understand that. Try saying "spent 250 on lunch".'
-      );
-    };
-
-    rec.onerror = (event) => {
-      const messages = {
-        "not-allowed":
-          "Microphone access is blocked for Paisa. Click the lock icon beside the address bar → Microphone → Allow, then reload.",
-        "service-not-allowed":
-          "Chrome's speech recognition service is unavailable. Check your internet connection and try again.",
-        "audio-capture":
-          "Paisa could not access your microphone. Check that the correct microphone is connected.",
-        "no-speech":
-          "I did not hear speech. Click the mic and speak clearly after it starts listening.",
-        network:
-          "Speech recognition could not reach the browser speech service. Check your internet connection.",
-        "language-not-supported":
-          "English (India) speech recognition is unavailable. Try Chrome/Edge with English enabled.",
-        aborted: "Voice input was stopped.",
+      recorder.ondataavailable = (event) => {
+        if (event.data?.size) chunksRef.current.push(event.data);
       };
 
-      errorRef.current?.(
-        messages[event?.error] || `Voice recognition failed: ${event?.error || "unknown error"}`
-      );
-    };
+      recorder.onerror = () => {
+        stream.getTracks().forEach((track) => track.stop());
+        recorderRef.current = null;
+        streamRef.current = null;
+        setListening(false);
+        setProcessing(false);
+        errorRef.current?.("Voice recording failed. Check your microphone and try again.");
+      };
 
-    rec.onend = () => {
-      setListening(false);
-      if (recRef.current === rec) recRef.current = null;
-    };
+      recorder.onstart = () => {
+        setListening(true);
+      };
 
-    recRef.current = rec;
+      recorder.onstop = async () => {
+        setListening(false);
+        setProcessing(true);
 
-    try {
-      rec.start();
+        stream.getTracks().forEach((track) => track.stop());
+        recorderRef.current = null;
+        streamRef.current = null;
+
+        const blob = new Blob(chunksRef.current, {
+          type: recorder.mimeType || mimeType || "audio/webm",
+        });
+        chunksRef.current = [];
+
+        if (!blob.size) {
+          setProcessing(false);
+          errorRef.current?.("No audio was recorded. Please try again.");
+          return;
+        }
+
+        try {
+          const response = await api.post("/ai/transcribe", blob, {
+            headers: {
+              "Content-Type": blob.type || "audio/webm",
+            },
+            timeout: 30000,
+            maxBodyLength: 25 * 1024 * 1024,
+          });
+
+          const text = response.data?.text?.trim();
+
+          if (!text) {
+            errorRef.current?.("I could not hear any words. Please speak clearly and try again.");
+          } else {
+            resultRef.current?.(text);
+          }
+        } catch (error) {
+          const status = error?.response?.status;
+          const message =
+            error?.response?.data?.message ||
+            (status === 401
+              ? "Your session expired. Please log in again."
+              : "Voice transcription failed. Please try again.");
+          errorRef.current?.(message);
+        } finally {
+          setProcessing(false);
+        }
+      };
+
+      recorder.start();
+      // Keep recordings short for fast transcription and low API usage.
+      timerRef.current = setTimeout(finishRecording, 10000);
     } catch (error) {
-      recRef.current = null;
-      setListening(false);
-      errorRef.current?.(
-        error?.message || "Could not start voice recognition. Try again."
-      );
+      stream?.getTracks().forEach((track) => track.stop());
+      recorderRef.current = null;
+      streamRef.current = null;
+
+      const message =
+        error?.name === "NotAllowedError"
+          ? "Microphone access is blocked for Paisa. Allow microphone access for this site, then try again."
+          : error?.name === "NotFoundError"
+            ? "No microphone was found. Check your microphone and try again."
+            : "Could not access your microphone. Check browser permissions.";
+
+      errorRef.current?.(message);
     }
-  }, []);
+  }, [finishRecording, processing]);
 
   const stop = useCallback(() => {
-    const rec = recRef.current;
-    recRef.current = null;
-    setListening(false);
+    finishRecording();
+  }, [finishRecording]);
 
-    try {
-      rec?.stop();
-    } catch {}
-  }, []);
-
-  return { listening, supported, start, stop };
+  return { listening, processing, supported, start, stop };
 }
