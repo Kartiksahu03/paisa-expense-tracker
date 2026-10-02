@@ -107,3 +107,33 @@ Rules:
   });
   return completion.choices[0].message.content.trim();
 };
+
+
+export const transcribeAudio = async (buffer, mimeType = "audio/webm") => {
+  if (!buffer?.length) {
+    throw new Error("Voice recording is empty.");
+  }
+
+  const extension = (mimeType.split("/")[1] || "webm").split(";")[0].replace(/[^a-z0-9]/gi, "") || "webm";
+  const fileName = `paisa-voice-${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`;
+  const filePath = `/tmp/${fileName}`;
+
+  const { promises: fs, createReadStream } = await import("node:fs");
+  try {
+    await fs.writeFile(filePath, buffer);
+
+    const transcription = await getGroq().audio.transcriptions.create({
+      file: createReadStream(filePath),
+      model: "whisper-large-v3-turbo",
+      language: "en",
+      prompt:
+        "Paisa Indian expense tracker. Transcribe transaction phrases accurately, including rupees, amounts, salary, spending, bills, food, shopping, travel, SIP, investments, and merchant names.",
+      response_format: "json",
+      temperature: 0,
+    });
+
+    return transcription.text?.trim() || "";
+  } finally {
+    await fs.unlink(filePath).catch(() => {});
+  }
+};
