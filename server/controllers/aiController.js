@@ -1,4 +1,4 @@
-import { parseTransaction, generateInsight, chatAssistant } from "../services/aiService.js";
+import { parseTransaction, generateInsight, chatAssistant, transcribeAudio } from "../services/aiService.js";
 import Transaction from "../models/Transaction.js";
 
 const monthRange = (month) => {
@@ -133,5 +133,37 @@ export const aiChat = async (req, res) => {
     res.json({ reply });
   } catch (err) {
     res.status(500).json({ message: "Assistant is unavailable right now." });
+  }
+};
+
+
+// POST /api/ai/transcribe
+// Receives raw audio/webm from the browser and transcribes it with Groq Whisper.
+export const aiTranscribe = async (req, res) => {
+  const audio = req.body;
+
+  if (!Buffer.isBuffer(audio) || audio.length === 0) {
+    return res.status(400).json({ message: "No voice recording was received." });
+  }
+
+  if (audio.length > 25 * 1024 * 1024) {
+    return res.status(413).json({ message: "Voice recording is too large. Keep it short and try again." });
+  }
+
+  try {
+    const text = await transcribeAudio(audio, req.headers["content-type"] || "audio/webm");
+
+    if (!text) {
+      return res.status(422).json({ message: "I could not hear any words. Please speak clearly and try again." });
+    }
+
+    res.json({ text });
+  } catch (err) {
+    console.error("Voice transcription failed:", err);
+    res.status(500).json({
+      message: err?.message?.includes("GROQ_API_KEY")
+        ? "AI service is not configured on the server."
+        : "Voice transcription failed. Please try again.",
+    });
   }
 };
