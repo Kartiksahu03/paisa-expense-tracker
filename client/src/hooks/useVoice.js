@@ -1,76 +1,104 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 
 // Browser speech-to-text wrapper.
-// onResult(text) fires when a final transcript is available.
-// onError(message) reports microphone/recognition failures to the UI.
+// Keeps recognition errors visible and avoids a separate getUserMedia preflight,
+// which can interfere with the browser's own SpeechRecognition microphone flow.
 export function useVoice(onResult, onError) {
   const [listening, setListening] = useState(false);
+  const [supported, setSupported] = useState(false);
   const recRef = useRef(null);
+  const resultRef = useRef(onResult);
+  const errorRef = useRef(onError);
 
-  const getRecognition = () =>
-    typeof window !== "undefined"
-      ? window.SpeechRecognition || window.webkitSpeechRecognition
-      : null;
+  useEffect(() => {
+    resultRef.current = onResult;
+  }, [onResult]);
 
-  const start = useCallback(async () => {
-    const SR = getRecognition();
+  useEffect(() => {
+    errorRef.current = onError;
+  }, [onError]);
+
+  useEffect(() => {
+    setSupported(
+      typeof window !== "undefined" &&
+        !!(window.SpeechRecognition || window.webkitSpeechRecognition)
+    );
+
+    return () => {
+      try {
+        recRef.current?.abort();
+      } catch {}
+      recRef.current = null;
+    };
+  }, []);
+
+  const start = useCallback(() => {
+    if (typeof window === "undefined") return;
+
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
     if (!SR) {
-      onError?.("Voice input is not supported in this browser. Try Chrome or Edge.");
+      errorRef.current?.(
+        "Voice input is not supported here. Use the latest Chrome or Edge."
+      );
       return;
     }
 
-    if (listening) return;
-
-    try {
-      if (navigator.mediaDevices?.getUserMedia) {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        stream.getTracks().forEach((track) => track.stop());
-      }
-    } catch (error) {
-      const message =
-        error?.name === "NotAllowedError"
-          ? "Microphone access is blocked. Allow microphone access for this site and try again."
-          : error?.name === "NotFoundError"
-            ? "No microphone was found. Check your microphone and try again."
-            : "Could not access your microphone. Check browser permissions.";
-      onError?.(message);
-      return;
-    }
+    if (recRef.current) return;
 
     const rec = new SR();
     rec.lang = "en-IN";
     rec.continuous = false;
-    rec.interimResults = false;
+    rec.interimResults = true;
     rec.maxAlternatives = 1;
 
-    rec.onstart = () => setListening(true);
+    rec.onstart = () => {
+      setListening(true);
+    };
 
     rec.onresult = (event) => {
       let transcript = "";
+
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
-        if (event.results[i].isFinal) transcript += event.results[i][0]?.transcript || "";
+        const result = event.results[i];
+        if (result?.isFinal) {
+          transcript += result[0]?.transcript || "";
+        }
       }
+
       transcript = transcript.trim();
-      if (transcript) onResult?.(transcript);
-      else onError?.("I could not hear a clear sentence. Please try again.");
+
+      if (transcript) {
+        resultRef.current?.(transcript);
+      }
     };
 
     rec.onnomatch = () => {
-      onError?.("I could not understand that. Try saying “spent 250 on lunch”.");
+      errorRef.current?.(
+        'I could not understand that. Try saying "spent 250 on lunch".'
+      );
     };
 
     rec.onerror = (event) => {
       const messages = {
-        "not-allowed": "Microphone permission was denied. Allow microphone access for this site.",
-        "audio-capture": "Your microphone could not be accessed.",
-        "no-speech": "I did not hear anything. Please speak again.",
-        network: "Speech recognition could not reach the speech service. Check your internet connection.",
-        "language-not-supported": "English (India) speech recognition is unavailable in this browser.",
-        "service-not-allowed": "The browser speech service is unavailable right now.",
+        "not-allowed":
+          "Microphone access is blocked for Paisa. Click the lock icon beside the address bar → Microphone → Allow, then reload.",
+        "service-not-allowed":
+          "Chrome's speech recognition service is unavailable. Check your internet connection and try again.",
+        "audio-capture":
+          "Paisa could not access your microphone. Check that the correct microphone is connected.",
+        "no-speech":
+          "I did not hear speech. Click the mic and speak clearly after it starts listening.",
+        network:
+          "Speech recognition could not reach the browser speech service. Check your internet connection.",
+        "language-not-supported":
+          "English (India) speech recognition is unavailable. Try Chrome/Edge with English enabled.",
         aborted: "Voice input was stopped.",
       };
-      onError?.(messages[event.error] || "Voice recognition failed.");
+
+      errorRef.current?.(
+        messages[event?.error] || `Voice recognition failed: ${event?.error || "unknown error"}`
+      );
     };
 
     rec.onend = () => {
@@ -85,15 +113,21 @@ export function useVoice(onResult, onError) {
     } catch (error) {
       recRef.current = null;
       setListening(false);
-      onError?.(error?.message || "Could not start voice recognition.");
+      errorRef.current?.(
+        error?.message || "Could not start voice recognition. Try again."
+      );
     }
-  }, [listening, onError, onResult]);
-
-  const stop = useCallback(() => {
-    try { recRef.current?.stop(); } catch {}
-    recRef.current = null;
-    setListening(false);
   }, []);
 
-  return { listening, supported: !!getRecognition(), start, stop };
+  const stop = useCallback(() => {
+    const rec = recRef.current;
+    recRef.current = null;
+    setListening(false);
+
+    try {
+      rec?.stop();
+    } catch {}
+  }, []);
+
+  return { listening, supported, start, stop };
 }
