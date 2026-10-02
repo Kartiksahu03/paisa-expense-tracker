@@ -5,7 +5,14 @@ import { protect } from "../middlewares/authMiddleware.js";
 const router = express.Router();
 router.use(protect);
 
-router.post("/transcribe", express.raw({ type: /^audio\//, limit: "25mb" }), aiTranscribe);
+// Accept browser-generated audio regardless of codec parameters
+// such as "audio/webm;codecs=opus".
+router.post(
+  "/transcribe",
+  express.raw({ type: "*/*", limit: "25mb" }),
+  aiTranscribe
+);
+
 router.post("/add", aiAddTransaction);
 router.get("/insight", aiInsight);
 router.post("/chat", aiChat);
