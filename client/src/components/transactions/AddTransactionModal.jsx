@@ -9,6 +9,19 @@ import { aiAdd, fetchInsight } from "../../features/ai/aiSlice.js";
 import { fetchBudget } from "../../features/budget/budgetSlice.js";
 import VoiceButton from "../ai/VoiceButton.jsx";
 
+const speak = (text) => {
+  if (typeof window === "undefined" || !("speechSynthesis" in window) || !text) return;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = "en-IN";
+  utterance.rate = 1;
+  utterance.pitch = 1;
+  const voices = window.speechSynthesis.getVoices();
+  const voice = voices.find((v) => /en-IN/i.test(v.lang)) || voices.find((v) => /^en/i.test(v.lang));
+  if (voice) utterance.voice = voice;
+  window.speechSynthesis.speak(utterance);
+};
+
 export default function AddTransactionModal({ onClose, defaultType = "expense" }) {
   const dispatch = useDispatch();
   const [mode, setMode] = useState("manual"); // "manual" | "ai"
@@ -44,12 +57,22 @@ export default function AddTransactionModal({ onClose, defaultType = "expense" }
   const saveAi = async (text) => {
     const value = (text ?? aiText).trim();
     if (!value) return;
+    setAiText(value);
     setLoading(true);
     const res = await dispatch(aiAdd(value));
     setLoading(false);
-    if (res.error) return toast.error(res.payload || "Couldn't understand that");
-    const { parsed } = res.payload;
-    toast.success(`Added ${parsed.type}: ₹${parsed.amount} (${parsed.category})`);
+    if (res.error) {
+      toast.error(res.payload || "Couldn't understand that");
+      return;
+    }
+    const parsed = res.payload?.parsed;
+    if (!parsed) {
+      toast.error("Paisa couldn't parse that transaction. Try again.");
+      return;
+    }
+    const message = `Added ${parsed.type === "income" ? "income" : "expense"} of ₹${parsed.amount} under ${parsed.category}.`;
+    toast.success(message);
+    speak(message);
     refreshAll();
     onClose();
   };
