@@ -15,6 +15,8 @@
 &nbsp;
 <a href="https://kartik-s-portfolio-tau.vercel.app"><img src="https://img.shields.io/badge/🌐_PORTFOLIO-6366F1?style=for-the-badge&logoColor=white" height="34"/></a>
 
+<a href="https://drive.google.com/file/d/1JeFndcBVYhzuUhZ6mOD1py6GOirxBjOU/view?usp=drive_link"><img src="https://img.shields.io/badge/🎬_WATCH_PAISA_DEMO-00C853?style=for-the-badge&logo=googledrive&logoColor=white" height="34" alt="Watch Paisa Demo"/></a>
+
 <br/><br/>
 
 <img src="https://img.shields.io/badge/MERN-00C853?style=flat-square&logoColor=white"/>
